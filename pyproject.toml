@@ -1,0 +1,27 @@
+[project]
+name = "aegis"
+version = "0.1.0"
+description = "Local low-latency AI desktop agent for Windows"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "PySide6>=6.10",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "openai>=1.50",
+    "nvidia-ml-py>=12.560",
+    "pywin32>=306",
+    "piper-tts>=1.6",
+]
+
+[project.optional-dependencies]
+# Added at later milestones; listed here so the full target set is recorded.
+perception = ["uiautomation>=2.0", "comtypes>=1.4", "mss>=9.0", "Pillow>=10.4"]
+voice = ["faster-whisper>=1.0", "sounddevice>=0.5", "openwakeword>=0.6"]
+memory = ["chromadb>=0.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["aegis*"]
