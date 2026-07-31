@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from aegis.core.dpi import set_dpi_awareness
@@ -20,10 +21,11 @@ from PySide6.QtCore import QObject, Qt, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from aegis.brain.intent import IntentClassifier  # noqa: E402
-from aegis.brain.lmstudio import check_planner_load  # noqa: E402
+from aegis.brain.lmstudio import ensure_planner_tuned  # noqa: E402
 from aegis.brain.planner import Planner, PlannerError  # noqa: E402
 from aegis.config import settings  # noqa: E402
 from aegis.core.killswitch import HotkeyManager  # noqa: E402
+from aegis.core.singleton import InstanceLock, signal_existing_instance  # noqa: E402
 from aegis.core.timing import Trace  # noqa: E402
 from aegis.execute.registry import Executor  # noqa: E402
 from aegis.safety.guard import AbortedError, BudgetExceededError, InputGuard  # noqa: E402
@@ -39,6 +41,8 @@ class Bridge(QObject):
     toggle_bar = Signal()
     killed = Signal()
     status = Signal(str)
+    confirm = Signal(str)
+    confirm_cancelled = Signal()
 
 
 def configure_logging() -> None:
@@ -69,19 +73,30 @@ class Aegis:
             intent: Executor(
                 self.guard,
                 allowed_verbs=verbs,
+                confirm=self._request_confirm,
                 ask=self._on_ask,
                 answer=self._on_answer,
             )
             for intent, verbs in CAPABILITY_SETS.items()
         }
 
+        # Cross-thread confirmation handshake: the pipeline thread blocks on
+        # this Event while the Qt main thread collects the answer.
+        self._confirm_event = threading.Event()
+        self._confirm_result = False
+
         from aegis.ui.commandbar import CommandBar
 
         self.bar = CommandBar()
         self.bar.submitted.connect(self._on_submit)
+        self.bar.confirm_answered.connect(self._on_confirm_answered)
         self.bridge.toggle_bar.connect(self.bar.toggle, Qt.ConnectionType.QueuedConnection)
         self.bridge.status.connect(self.bar.set_status, Qt.ConnectionType.QueuedConnection)
         self.bridge.killed.connect(self._on_killed, Qt.ConnectionType.QueuedConnection)
+        self.bridge.confirm.connect(self.bar.ask_confirm, Qt.ConnectionType.QueuedConnection)
+        self.bridge.confirm_cancelled.connect(
+            self.bar.cancel_confirm, Qt.ConnectionType.QueuedConnection
+        )
 
         self.hotkeys = HotkeyManager()
         self.hotkeys.bind("command_bar", settings.hotkey_command_bar, self.bridge.toggle_bar.emit)
@@ -89,8 +104,7 @@ class Aegis:
 
     # --- lifecycle ------------------------------------------------------
     def start(self) -> None:
-        ok, detail = check_planner_load()
-        (log.info if ok else log.warning)("LM Studio: %s", detail)
+        log.info("LM Studio: %s", ensure_planner_tuned())
 
         self.tts.start()
         self.hotkeys.start()
@@ -117,6 +131,31 @@ class Aegis:
 
     def _on_answer(self, answer: str) -> None:
         self.bridge.status.emit(answer)
+
+    def _on_confirm_answered(self, approved: bool) -> None:
+        self._confirm_result = approved
+        self._confirm_event.set()
+
+    def _request_confirm(self, question: str) -> bool:
+        """Ask the user to approve an action. Called from the pipeline thread.
+
+        Blocks until the Qt thread reports an answer, or until the timeout -
+        which defaults to NO, so a question the user never sees or never
+        answers can never become an action.
+        """
+        self._confirm_event.clear()
+        self._confirm_result = False
+        self.bridge.confirm.emit(question)
+        self.tts.say(f"{question}? Please confirm, sir.")
+
+        if not self._confirm_event.wait(timeout=settings.confirm_timeout_s):
+            log.warning("confirmation timed out: %s", question)
+            self.bridge.confirm_cancelled.emit()
+            self.bridge.status.emit("Timed out - I did nothing.")
+            return False
+
+        log.info("confirmation %s: %s", "approved" if self._confirm_result else "declined", question)
+        return self._confirm_result
 
     def _on_submit(self, text: str) -> None:
         self.bar.set_status("Thinking…")
@@ -182,6 +221,12 @@ class Aegis:
 def main() -> int:
     configure_logging()
 
+    lock = InstanceLock()
+    if not lock.acquire():
+        log.warning("another Aegis instance is already running")
+        signal_existing_instance()
+        return 0
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # the bar hides rather than exits
 
@@ -193,6 +238,7 @@ def main() -> int:
         return app.exec()
     finally:
         aegis.shutdown()
+        lock.release()
 
 
 if __name__ == "__main__":

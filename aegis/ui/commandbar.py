@@ -58,9 +58,11 @@ QLabel#status {
 
 class CommandBar(QWidget):
     submitted = Signal(str)
+    confirm_answered = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
+        self._pending_confirm = False
         # The top-level window itself stays fully transparent and unstyled;
         # everything visible lives on the `card` child so the glow effect has
         # room to render outside the card's own edge instead of getting
@@ -111,6 +113,12 @@ class CommandBar(QWidget):
 
     # --- visibility -----------------------------------------------------
     def toggle(self) -> None:
+        # Hiding mid-confirmation would strand the pipeline thread waiting for
+        # an answer, so the hotkey is inert until the question is resolved.
+        if self._pending_confirm:
+            self.raise_()
+            self.activateWindow()
+            return
         if self.isVisible():
             self.hide()
         else:
@@ -143,8 +151,47 @@ class CommandBar(QWidget):
         y = area.y() + int(area.height() * 0.28)
         self.move(x, y)
 
+    # --- confirmation ---------------------------------------------------
+    def ask_confirm(self, question: str) -> None:
+        """Enter a modal-ish confirm state without opening a second window.
+
+        The input is disabled so Enter cannot be swallowed by the line edit,
+        and focus moves to the widget itself so its keyPressEvent sees the
+        answer.
+        """
+        self._pending_confirm = True
+        if not self.isVisible():
+            self.summon()
+        self.input.setEnabled(False)
+        self.input.setText("")
+        self.status.setText(f"{question}?   [Enter] proceed   [Esc] cancel")
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.raise_()
+
+    def cancel_confirm(self) -> None:
+        """Leave the confirm state without emitting an answer (e.g. on timeout)."""
+        self._pending_confirm = False
+        self.input.setEnabled(True)
+        self.input.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _resolve_confirm(self, approved: bool) -> None:
+        self._pending_confirm = False
+        self.input.setEnabled(True)
+        self.status.setText("Proceeding…" if approved else "Cancelled.")
+        self.input.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.confirm_answered.emit(approved)
+
     # --- events ---------------------------------------------------------
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._pending_confirm:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._resolve_confirm(True)
+            elif event.key() == Qt.Key.Key_Escape:
+                self._resolve_confirm(False)
+            # Everything else is swallowed: while a confirmation is pending
+            # there is no other meaningful input.
+            return
+
         if event.key() == Qt.Key.Key_Escape:
             self.hide()
             return

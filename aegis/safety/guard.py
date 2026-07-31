@@ -19,6 +19,43 @@ from aegis.config import settings
 log = logging.getLogger(__name__)
 
 
+# Chords that close, discard or destroy something. press_keys is gated on this
+# rather than being blanket-destructive, since most chords (ctrl+s, ctrl+c,
+# ctrl+tab) are entirely benign and prompting for them would train the user to
+# approve without reading.
+DESTRUCTIVE_CHORDS: frozenset[str] = frozenset(
+    {
+        "alt+f4",        # close window
+        "ctrl+w",        # close tab/document
+        "ctrl+shift+w",  # close all windows
+        "ctrl+q",        # quit application
+        "ctrl+shift+q",  # quit all
+        "shift+delete",  # permanent delete, bypasses Recycle Bin
+        "ctrl+shift+delete",  # clear browsing data
+        "win+l",         # lock workstation
+        "alt+f7",
+    }
+)
+
+
+def normalise_chord(combo: str) -> str:
+    """Canonical form of a chord so ``Alt + F4`` matches ``alt+f4``.
+
+    Modifiers are sorted so ordering cannot be used to slip a chord past the
+    classifier; the final non-modifier key is kept last.
+    """
+    parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
+    aliases = {"control": "ctrl", "esc": "escape", "del": "delete", "super": "win", "meta": "win"}
+    parts = [aliases.get(p, p) for p in parts]
+    modifiers = sorted(p for p in parts if p in {"ctrl", "alt", "shift", "win"})
+    keys = [p for p in parts if p not in {"ctrl", "alt", "shift", "win"}]
+    return "+".join(modifiers + keys)
+
+
+def is_destructive_chord(combo: str) -> bool:
+    return normalise_chord(combo) in {normalise_chord(c) for c in DESTRUCTIVE_CHORDS}
+
+
 class AbortedError(RuntimeError):
     """Raised when the kill switch trips mid-execution."""
 

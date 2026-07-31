@@ -29,17 +29,39 @@ from aegis.config import settings
 # the model, so an injected instruction cannot name a capability we lack.
 Verb = Literal[
     "launch_app",
+    "focus_window",
+    "type_text",
+    "press_keys",
+    "task_add",
+    "task_complete",
+    "query_tasks",
     "answer",
     "ask_user",
 ]
 
-ALL_VERBS: frozenset[str] = frozenset({"launch_app", "answer", "ask_user"})
+ALL_VERBS: frozenset[str] = frozenset(
+    {
+        "launch_app",
+        "focus_window",
+        "type_text",
+        "press_keys",
+        "task_add",
+        "task_complete",
+        "query_tasks",
+        "answer",
+        "ask_user",
+    }
+)
 
 # Verbs with no effect outside Aegis itself. Everything else is side-effecting.
-READ_ONLY_VERBS: frozenset[str] = frozenset({"answer", "ask_user"})
+# query_tasks only reads our own database, so it is safe on the read path.
+READ_ONLY_VERBS: frozenset[str] = frozenset({"answer", "ask_user", "query_tasks"})
 
 # Verbs whose effects are hard to undo. These always route through the
 # human-in-the-loop confirmation regardless of how confident the model is.
+#
+# press_keys is not blanket-destructive - ctrl+s is harmless - so it is gated
+# per chord instead, by is_destructive_chord() in safety/guard.py.
 DESTRUCTIVE_VERBS: frozenset[str] = frozenset()
 
 
@@ -54,8 +76,18 @@ class Intent(str, Enum):
 # The capability set granted to each intent. A QUERY turn cannot launch
 # anything, because launch_app is absent from the grammar it decodes against.
 CAPABILITY_SETS: dict[Intent, frozenset[str]] = {
-    Intent.ACT: frozenset({"launch_app", "ask_user"}),
-    Intent.QUERY: frozenset({"answer", "ask_user"}),
+    Intent.ACT: frozenset(
+        {
+            "launch_app",
+            "focus_window",
+            "type_text",
+            "press_keys",
+            "task_add",
+            "task_complete",
+            "ask_user",
+        }
+    ),
+    Intent.QUERY: frozenset({"answer", "query_tasks", "ask_user"}),
     Intent.UNKNOWN: frozenset({"ask_user"}),
 }
 

@@ -3,10 +3,11 @@
 A local, low-latency AI desktop agent for Windows — a JARVIS-style assistant that
 takes natural-language commands and drives the OS. Everything runs on-device.
 
-**Status: M0 complete.** A full vertical slice works end to end: global hotkey →
-command bar → local LLM planner (constrained JSON) → executor → speech. The
-safety primitives (kill switch, verb whitelist, action ceiling, rate cap, taint
-gate) are in place and tested.
+**Status: M1 complete.** Global hotkey → command bar → local LLM planner
+(constrained JSON) → gated executor → speech. Aegis can launch and focus apps,
+type text, press key chords, and track tasks in SQLite. Safety primitives (kill
+switch, verb whitelist, action ceiling, rate cap, taint gate, inline
+confirmation) are in place and tested against live synthetic input.
 
 ## Requirements
 
@@ -37,8 +38,14 @@ lms server start && lms load llama-3.2-3b-instruct -c 4096 --parallel 1 --ttl 36
   PowerToys / Command Palette on most systems)
 - **`Ctrl+Alt+Backspace`** — kill switch; halts all synthetic input immediately
 - **`Esc`** — dismiss the bar
+- **`Enter` / `Esc`** — approve / cancel when a confirmation is pending
 
-Try: *"open notepad"*, *"I need the calculator"*, *"fire up chrome"*.
+Try: *"open notepad"*, *"switch to firefox"*, *"type hello world"*,
+*"log that I finished the history essay"*, *"what do I still have to do"*.
+
+Risky actions (closing chords like `alt+f4`, unrecognised applications, and any
+plan built from untrusted screen content) pause for an inline `Enter`/`Esc`
+confirmation and default to **no** after 25s.
 
 **Voice:** speaks with a JARVIS-styled Piper voice (`var/voices/jarvis-high.onnx`,
 MIT licensed, from [jgkawell/jarvis](https://huggingface.co/jgkawell/jarvis)),
@@ -57,9 +64,20 @@ Harmless on wired output.
 .venv/Scripts/python.exe scripts/m0_check.py
 ```
 
-Checks VRAM headroom, planner latency and schema validity, prompt-injection
-handling, and all four safety mechanisms. Measured results and what they changed
-about the design are in [docs/m0-findings.md](docs/m0-findings.md).
+```bash
+.venv/Scripts/python.exe scripts/m1_check.py
+```
+
+`m0_check` covers VRAM headroom, planner latency and schema validity,
+prompt-injection handling, and the safety mechanisms. `m1_check` covers
+capability wiring, the UIPI guard, chord classification, the confirmation gate,
+and — the important one — trips the kill switch during a **real** synthetic
+typing burst. Both need a quiet machine: `m0_check` skips its cursor test if
+you are using the mouse, and `m1_check` briefly steals focus to type into
+Notepad.
+
+Measured results and what they changed about the design are in
+[docs/m0-findings.md](docs/m0-findings.md).
 
 ## Architecture
 
@@ -70,7 +88,7 @@ resort rather than the default:
 |---|---|---|
 | −1 | Deterministic intent router (no LLM) | M2 |
 | 0 | Direct API / IPC hooks | M6 |
-| 1 | Windows UI Automation | M2 |
+| 1 | Windows UI Automation | M2 (window focus done) |
 | 2a | Windows OCR + string match (0 GB, hard confidence signal) | M4 |
 | 2b | Visual grounding, Qwen2.5-VL via JIT swap | M4 |
 | 3 | Ask the user | done |
@@ -89,10 +107,20 @@ aegis/
   safety/          abort event, rate cap, action ceiling
   schema/          pydantic actions -> JSON Schema for constrained decoding
   brain/           persona prompt, untrusted-content fence, LM Studio planner
-  execute/         SendInput primitives, the single gated executor
-  ui/              command bar
+  execute/         SendInput primitives, window focus, the single gated executor
+  memory/          SQLite task store
+  ui/              command bar (doubles as the confirmation prompt)
   voice/           TTS with pre-rendered acknowledgement cache
 ```
+
+### Elevated windows
+
+Aegis runs at Medium integrity, so Windows (UIPI) blocks it from typing into
+elevated windows — admin terminals, UAC prompts, regedit. `SendInput` still
+*reports success* in that case, so `core/integrity.py` checks the foreground
+window's integrity level first and refuses honestly rather than claiming to
+have typed. This is a deliberate OS boundary and is not worked around: running
+Aegis elevated would hand a 3B model admin-level input.
 
 ### Two things worth knowing before changing anything
 

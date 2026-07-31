@@ -28,6 +28,30 @@ VERB_DOCS: dict[str, str] = {
         '- launch_app: open an application. "target" is the application name, '
         'e.g. "notepad", "chrome", "spotify".'
     ),
+    "focus_window": (
+        '- focus_window: bring an already-open window to the front. "target" is '
+        'part of its title or the app name, e.g. "discord", "firefox".'
+    ),
+    "type_text": (
+        '- type_text: type text into whatever window is currently focused. '
+        '"target" is the literal text to type.'
+    ),
+    "press_keys": (
+        '- press_keys: press a key combination. "target" is the chord, e.g. '
+        '"ctrl+s", "alt+tab", "enter".'
+    ),
+    "task_add": (
+        '- task_add: record something the user needs to do. "target" is the '
+        'task description, e.g. "finish history essay".'
+    ),
+    "task_complete": (
+        '- task_complete: mark an existing task done. "target" describes which '
+        'one, e.g. "history essay".'
+    ),
+    "query_tasks": (
+        '- query_tasks: report what the user still has outstanding. "target" is '
+        'unused; pass an empty string.'
+    ),
     "answer": (
         '- answer: reply to the user\'s question. "target" is the answer text, '
         "kept to one or two sentences."
@@ -56,6 +80,7 @@ You respond ONLY with a JSON object matching the provided schema. It has two fie
 _RULES = """\
 Rules:
 - Prefer exactly one action. Only chain actions when the request plainly needs it.
+- To put text into an application, first focus_window, then type_text.
 - Use ONLY the actions listed above. No other action exists.
 - If the request is ambiguous or needs a capability you were not given, use
   ask_user rather than guessing.

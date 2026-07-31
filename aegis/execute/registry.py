@@ -8,15 +8,27 @@ whitelist, so the fast path cannot drift from the slow path or skip a guard.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
 import winreg
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
+from aegis.core.integrity import can_send_input_to_foreground
 from aegis.core.timing import Trace
-from aegis.safety.guard import InputGuard, PlanBudget
+from aegis.execute import windows as win
+from aegis.execute.sendinput import InputSender
+from aegis.memory import db
+from aegis.safety.guard import (
+    AbortedError,
+    InputGuard,
+    PlanBudget,
+    is_destructive_chord,
+    normalise_chord,
+)
 from aegis.schema.actions import ALL_VERBS, DESTRUCTIVE_VERBS, READ_ONLY_VERBS, Action, Plan
 
 log = logging.getLogger(__name__)
@@ -49,6 +61,11 @@ _APP_ALIASES: dict[str, str] = {
     "settings": "ms-settings:",
 }
 
+_START_MENU_DIRS = [
+    Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
+    Path(os.environ.get("PROGRAMDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
+]
+
 
 @dataclass
 class ExecutionResult:
@@ -80,12 +97,37 @@ def _app_paths_lookup(exe: str) -> str | None:
     return None
 
 
+def _start_menu_lookup(name: str) -> str | None:
+    """Find a Start Menu shortcut whose name matches.
+
+    This is what makes "open obsidian" work for apps that are neither on PATH
+    nor registered in App Paths - which is most modern user-installed
+    software. Shortcuts are launched via the shell, which resolves the .lnk.
+    """
+    needle = name.strip().lower()
+    if not needle:
+        return None
+    best: tuple[int, str] | None = None
+    for root in _START_MENU_DIRS:
+        if not root.is_dir():
+            continue
+        for lnk in root.rglob("*.lnk"):
+            stem = lnk.stem.lower()
+            if stem == needle:
+                return str(lnk)
+            if stem.startswith(needle) or needle in stem:
+                score = len(stem)
+                if best is None or score < best[0]:
+                    best = (score, str(lnk))
+    return best[1] if best else None
+
+
 class Executor:
     def __init__(
         self,
         guard: InputGuard,
         allowed_verbs: frozenset[str] | None = None,
-        confirm: Callable[[Action], bool] | None = None,
+        confirm: Callable[[str], bool] | None = None,
         ask: Callable[[str], None] | None = None,
         answer: Callable[[str], None] | None = None,
     ) -> None:
@@ -94,21 +136,56 @@ class Executor:
         This is how the read path and the act path are kept apart: the query
         executor is constructed with only read-only verbs, so a side-effecting
         handler is not merely refused at runtime - it was never wired in.
+
+        ``confirm`` receives a human-readable description of the pending
+        action and returns True to proceed. With no handler wired up, anything
+        needing confirmation is refused, so the gate fails closed.
         """
         self.guard = guard
         self._confirm = confirm
         self._ask = ask
         self._answer = answer
+        self.sender = InputSender(guard)
 
         # The whitelist. A verb absent from this mapping cannot be executed,
         # regardless of what the model or an injected instruction asks for.
         every: dict[str, Callable[[Action], tuple[str, dict]]] = {
             "launch_app": self._launch_app,
+            "focus_window": self._focus_window,
+            "type_text": self._type_text,
+            "press_keys": self._press_keys,
+            "task_add": self._task_add,
+            "task_complete": self._task_complete,
+            "query_tasks": self._query_tasks,
             "answer": self._answer_user,
             "ask_user": self._ask_user,
         }
         permitted = allowed_verbs if allowed_verbs is not None else ALL_VERBS
         self._handlers = {verb: fn for verb, fn in every.items() if verb in permitted}
+
+    # --- confirmation ---------------------------------------------------
+    def _needs_confirmation(self, action: Action, tainted: bool) -> str | None:
+        """Human-readable reason this action needs a yes, or None if it doesn't."""
+        if action.verb in DESTRUCTIVE_VERBS:
+            return f"{action.verb} is a destructive action"
+        if tainted and action.verb not in READ_ONLY_VERBS:
+            return "this plan was built from untrusted screen content"
+        if action.verb == "press_keys" and is_destructive_chord(action.target):
+            return f"{normalise_chord(action.target)} closes or discards something"
+        if action.verb == "launch_app" and self._is_unrecognised_app(action.target):
+            return f"{action.target!r} is not a known application"
+        return None
+
+    @staticmethod
+    def _is_unrecognised_app(target: str) -> bool:
+        name = target.strip().lower()
+        if name in _APP_ALIASES:
+            return False
+        # A raw path or URI scheme is exactly the case worth confirming.
+        if ":" in target or "\\" in target or "/" in target:
+            return True
+        exe = name if name.endswith(".exe") else f"{name}.exe"
+        return not (shutil.which(exe) or _app_paths_lookup(exe) or _start_menu_lookup(name))
 
     def run(
         self,
@@ -144,18 +221,16 @@ class Executor:
                 log.warning("refused %r: %s", action.verb, reason)
                 continue
 
-            needs_confirm = action.verb in DESTRUCTIVE_VERBS or (
-                tainted and action.verb not in READ_ONLY_VERBS
-            )
-            if needs_confirm:
+            reason = self._needs_confirmation(action, tainted)
+            if reason is not None:
                 # Confidence never bypasses this gate, and it fails closed:
                 # with no confirmation handler wired up, the action is refused.
-                reason = "tainted context" if tainted else "destructive action"
-                if self._confirm is None or not self._confirm(action):
+                question = self._describe(action)
+                if self._confirm is None or not self._confirm(question):
                     results.append(
-                        ExecutionResult(action.verb, False, f"blocked ({reason}), not confirmed")
+                        ExecutionResult(action.verb, False, f"declined ({reason})")
                     )
-                    log.warning("blocked %s (%s)", action.verb, reason)
+                    log.warning("blocked %s: %s", action.verb, reason)
                     continue
 
             try:
@@ -165,11 +240,31 @@ class Executor:
                 else:
                     detail, data = handler(action)
                 results.append(ExecutionResult(action.verb, True, detail, data))
+            except AbortedError:
+                # Must escape rather than be recorded as an ordinary failure.
+                # Swallowing it here would let a kill switch pressed during the
+                # final action of a plan look like success to the caller.
+                log.warning("aborted during %s", action.verb)
+                raise
             except Exception as exc:
                 log.exception("action %s failed", action.verb)
                 results.append(ExecutionResult(action.verb, False, str(exc)))
 
         return results
+
+    @staticmethod
+    def _describe(action: Action) -> str:
+        """Plain-language description of a pending action, for the confirm prompt."""
+        target = action.target
+        phrasing = {
+            "launch_app": f"Launch {target}",
+            "focus_window": f"Switch to {target}",
+            "type_text": f"Type {target!r} into the focused window",
+            "press_keys": f"Press {normalise_chord(target)}",
+            "task_add": f"Add task {target!r}",
+            "task_complete": f"Mark {target!r} complete",
+        }
+        return phrasing.get(action.verb, f"{action.verb}: {target}")
 
     # --- handlers -------------------------------------------------------
     def _launch_app(self, action: Action) -> tuple[str, dict]:
@@ -186,11 +281,61 @@ class Executor:
 
         exe = resolved if resolved.lower().endswith(".exe") else f"{resolved}.exe"
         path = shutil.which(exe) or _app_paths_lookup(exe)
-        if path is None:
-            raise ExecutionError(f"could not find an application called {target!r}")
+        if path is not None:
+            proc = subprocess.Popen([path], shell=False)
+            return f"launched {path}", {"pid": proc.pid, "path": path}
 
-        proc = subprocess.Popen([path], shell=False)
-        return f"launched {path}", {"pid": proc.pid, "path": path}
+        shortcut = _start_menu_lookup(target)
+        if shortcut is not None:
+            # .lnk files must go through the shell to be resolved.
+            proc = subprocess.Popen(["cmd", "/c", "start", "", shortcut], shell=False)
+            return f"launched {Path(shortcut).stem}", {"pid": proc.pid, "shortcut": shortcut}
+
+        raise ExecutionError(f"could not find an application called {target!r}")
+
+    def _focus_window(self, action: Action) -> tuple[str, dict]:
+        match = win.find_window(action.target)
+        if match is None:
+            open_titles = ", ".join(w.title[:30] for w in win.list_windows()[:5])
+            raise ExecutionError(
+                f"no window matching {action.target!r} (open: {open_titles})"
+            )
+        if not win.focus_window(match.hwnd):
+            raise ExecutionError(f"Windows refused to focus {match.title!r}")
+        return f"focused {match.title}", {"hwnd": match.hwnd, "title": match.title}
+
+    def _type_text(self, action: Action) -> tuple[str, dict]:
+        allowed, reason = can_send_input_to_foreground()
+        if not allowed:
+            # UIPI would swallow the keystrokes while SendInput still reports
+            # success, so refuse loudly rather than claim to have typed.
+            raise ExecutionError(f"I can't type there - {reason}")
+        self.sender.type_text(action.target)
+        return f"typed {len(action.target)} characters", {"length": len(action.target)}
+
+    def _press_keys(self, action: Action) -> tuple[str, dict]:
+        allowed, reason = can_send_input_to_foreground()
+        if not allowed:
+            raise ExecutionError(f"I can't send keys there - {reason}")
+        chord = normalise_chord(action.target)
+        self.sender.press_keys(action.target)
+        return f"pressed {chord}", {"chord": chord}
+
+    def _task_add(self, action: Action) -> tuple[str, dict]:
+        task = db.add_task(action.target)
+        return f"logged task: {task.title}", {"id": task.id, "title": task.title}
+
+    def _task_complete(self, action: Action) -> tuple[str, dict]:
+        task = db.complete_task(action.target)
+        if task is None:
+            raise ExecutionError(f"no open task matching {action.target!r}")
+        return f"completed: {task.title}", {"id": task.id, "title": task.title}
+
+    def _query_tasks(self, action: Action) -> tuple[str, dict]:
+        summary = db.summarise_open()
+        if self._answer is not None:
+            self._answer(summary)
+        return summary, {"summary": summary}
 
     def _ask_user(self, action: Action) -> tuple[str, dict]:
         if self._ask is not None:

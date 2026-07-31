@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # --- Safety ----------------------------------------------------------
     max_actions_per_plan: int = 12
     max_inputs_per_second: float = 40.0
+    # How long to wait for a yes/no before defaulting to NO. A confirmation
+    # that never resolves must not leave the pipeline thread parked forever.
+    confirm_timeout_s: float = 25.0
 
     # --- Vision (M4) -----------------------------------------------------
     vision_max_edge: int = 1024
