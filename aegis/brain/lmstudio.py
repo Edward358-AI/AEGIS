@@ -124,4 +124,6 @@ def check_planner_load() -> tuple[bool, str]:
             f"  lms load {settings.planner_model} "
             f"-c {settings.planner_context} --parallel 1 --ttl 3600 -y"
         )
-    return True, f"planner loaded at {loaded_ctx} context"
+    if loaded_ctx:
+        return True, f"planner loaded at {loaded_ctx} context"
+    return True, "planner loaded (context length unreported)"

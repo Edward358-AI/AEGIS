@@ -55,8 +55,9 @@ silence padding (see below) are tunable via `AEGIS_TTS_SPEED` and
 
 If your output device is Bluetooth, the first ~1s of a fresh clip can get
 dropped while the link wakes from idle — every rendered clip is padded with
-900ms of silence to absorb that (`aegis/voice/tts.py::_prepend_silence`).
-Harmless on wired output.
+leading silence to absorb that (`aegis/voice/tts.py::_prepend_silence`;
+default 900ms). Tune `AEGIS_TTS_LEAD_SILENCE_MS` down until clipping returns,
+then go one step back up. Harmless on wired output.
 
 ## Verify
 

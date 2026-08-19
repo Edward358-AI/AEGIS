@@ -73,6 +73,10 @@ class ExecutionResult:
     ok: bool
     detail: str
     data: dict = field(default_factory=dict)
+    # True when the confirmation gate said no (user declined, timed out, or no
+    # handler was wired). Callers report that differently from a failure:
+    # nothing went wrong, a human just wasn't convinced.
+    declined: bool = False
 
 
 class ExecutionError(RuntimeError):
@@ -228,10 +232,16 @@ class Executor:
                 question = self._describe(action)
                 if self._confirm is None or not self._confirm(question):
                     results.append(
-                        ExecutionResult(action.verb, False, f"declined ({reason})")
+                        ExecutionResult(
+                            action.verb, False, f"declined ({reason})", declined=True
+                        )
                     )
                     log.warning("blocked %s: %s", action.verb, reason)
                     continue
+                # The kill switch may trip while the question is open, and the
+                # user may still answer yes a beat later. A yes that predates
+                # the halt is stale - never act on it.
+                self.guard.check()
 
             try:
                 if trace is not None:

@@ -33,7 +33,6 @@ DESTRUCTIVE_CHORDS: frozenset[str] = frozenset(
         "shift+delete",  # permanent delete, bypasses Recycle Bin
         "ctrl+shift+delete",  # clear browsing data
         "win+l",         # lock workstation
-        "alt+f7",
     }
 )
 

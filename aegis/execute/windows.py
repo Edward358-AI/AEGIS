@@ -102,6 +102,16 @@ def find_window(target: str) -> Window | None:
     return min(candidates, key=lambda pair: pair[0])[1]
 
 
+def foreground_hwnd() -> int:
+    """The current foreground window's handle, or 0 if there is none."""
+    return int(user32.GetForegroundWindow() or 0)
+
+
+def is_window(hwnd: int) -> bool:
+    """Whether the handle still names a live window."""
+    return bool(user32.IsWindow(hwnd))
+
+
 def focus_window(hwnd: int) -> bool:
     """Raise and focus a window, working around the foreground lock."""
     if user32.IsIconic(hwnd):

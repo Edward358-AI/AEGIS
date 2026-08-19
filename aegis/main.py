@@ -22,11 +22,13 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from aegis.brain.intent import IntentClassifier  # noqa: E402
 from aegis.brain.lmstudio import ensure_planner_tuned  # noqa: E402
+from aegis.brain.outcome import speech_for_outcome  # noqa: E402
 from aegis.brain.planner import Planner, PlannerError  # noqa: E402
 from aegis.config import settings  # noqa: E402
 from aegis.core.killswitch import HotkeyManager  # noqa: E402
 from aegis.core.singleton import InstanceLock, signal_existing_instance  # noqa: E402
 from aegis.core.timing import Trace  # noqa: E402
+from aegis.execute import windows as win  # noqa: E402
 from aegis.execute.registry import Executor  # noqa: E402
 from aegis.safety.guard import AbortedError, BudgetExceededError, InputGuard  # noqa: E402
 from aegis.schema.actions import CAPABILITY_SETS  # noqa: E402
@@ -121,6 +123,14 @@ class Aegis:
     # --- handlers -------------------------------------------------------
     def _trip_kill(self) -> None:
         self.guard.trip()
+        # A pending confirmation dies with the plan it belongs to: unpark the
+        # pipeline thread with a NO immediately rather than leaving it (and
+        # the bar's confirm state) waiting out the 25s timeout. Setting the
+        # event with no confirmation pending is harmless - _request_confirm
+        # clears it before every wait.
+        self._confirm_result = False
+        self._confirm_event.set()
+        self.bridge.confirm_cancelled.emit()
         self.bridge.killed.emit()
 
     def _on_killed(self) -> None:
@@ -142,20 +152,40 @@ class Aegis:
         Blocks until the Qt thread reports an answer, or until the timeout -
         which defaults to NO, so a question the user never sees or never
         answers can never become an action.
+
+        The bar takes real keyboard focus to pose the question (otherwise
+        Enter would land in whatever window the plan just focused), so the
+        previous foreground window is put back before this returns - an
+        approved press_keys/type_text must land where the plan aimed it, not
+        on the bar that asked about it.
         """
+        previous = win.foreground_hwnd()
         self._confirm_event.clear()
         self._confirm_result = False
         self.bridge.confirm.emit(question)
         self.tts.say(f"{question}? Please confirm, sir.")
 
-        if not self._confirm_event.wait(timeout=settings.confirm_timeout_s):
-            log.warning("confirmation timed out: %s", question)
-            self.bridge.confirm_cancelled.emit()
-            self.bridge.status.emit("Timed out - I did nothing.")
-            return False
+        try:
+            if not self._confirm_event.wait(timeout=settings.confirm_timeout_s):
+                log.warning("confirmation timed out: %s", question)
+                self.bridge.confirm_cancelled.emit()
+                self.bridge.status.emit("Timed out - I did nothing.")
+                return False
 
-        log.info("confirmation %s: %s", "approved" if self._confirm_result else "declined", question)
-        return self._confirm_result
+            log.info(
+                "confirmation %s: %s",
+                "approved" if self._confirm_result else "declined", question,
+            )
+            return self._confirm_result
+        finally:
+            self._restore_foreground(previous)
+
+    def _restore_foreground(self, hwnd: int) -> None:
+        """Hand focus back to the window that had it before the bar asked."""
+        if not hwnd or hwnd == win.foreground_hwnd() or not win.is_window(hwnd):
+            return
+        if not win.focus_window(hwnd):
+            log.warning("could not hand focus back to hwnd %s after confirmation", hwnd)
 
     def _on_submit(self, text: str) -> None:
         self.bar.set_status("Thinking…")
@@ -206,14 +236,23 @@ class Aegis:
             self.tts.say("I've stopped, sir. That was going nowhere.")
             return
 
-        self.tts.say(plan.speech)
+        # What gets SAID is decided from the results, not from the plan:
+        # plan.speech was written before anything ran, and a failed or
+        # declined plan must not get its success line read aloud. Query
+        # answers come out of execution too, so this is also where "what do I
+        # still have to do" gains an actual spoken answer.
+        outcome = speech_for_outcome(plan, results)
+        if outcome.status is not None:
+            self.bridge.status.emit(outcome.status)
+        if outcome.speech:
+            self.tts.say(outcome.speech)
 
-        failures = [r for r in results if not r.ok]
-        if failures:
-            detail = failures[0].detail
-            log.warning("action failed: %s", detail)
-            self.bridge.status.emit(f"Failed: {detail}")
-            self.tts.say("That didn't work, sir.")
+        for result in results:
+            if not result.ok:
+                log.warning(
+                    "action %s %s: %s",
+                    result.verb, "declined" if result.declined else "failed", result.detail,
+                )
 
         trace.log()
 

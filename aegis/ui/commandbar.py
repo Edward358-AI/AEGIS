@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from aegis.config import settings
+from aegis.execute import windows as win
 
 log = logging.getLogger(__name__)
 
@@ -130,18 +131,29 @@ class CommandBar(QWidget):
         self.status.setText("")
         self.setWindowOpacity(0.0)
         self.show()
-        self.raise_()
-        self.activateWindow()
-        # Qt alone often will not win the foreground race when the window was
-        # summoned from a hotkey thread, so ask Win32 directly.
-        try:
-            user32.AllowSetForegroundWindow(ASFW_ANY)
-            user32.SetForegroundWindow(int(self.winId()))
-        except OSError:
-            log.debug("SetForegroundWindow failed", exc_info=True)
+        self._activate()
         self.input.setFocus(Qt.FocusReason.OtherFocusReason)
         self._fade.stop()
         self._fade.start()
+
+    def _activate(self) -> None:
+        """Take real keyboard focus, even while another app holds foreground.
+
+        Qt's activateWindow() alone loses Windows' foreground race whenever we
+        were not the last process to receive input - which is exactly the
+        state after a plan ran focus_window on some other app. focus_window()
+        does the documented AttachThreadInput handover, the same mechanism the
+        executor itself uses; the plain SetForegroundWindow fallback covers
+        the hotkey case, where our recent input grants us the right directly.
+        """
+        self.raise_()
+        self.activateWindow()
+        if not win.focus_window(int(self.winId())):
+            try:
+                user32.AllowSetForegroundWindow(ASFW_ANY)
+                user32.SetForegroundWindow(int(self.winId()))
+            except OSError:
+                log.debug("SetForegroundWindow failed", exc_info=True)
 
     def _centre_on_active_screen(self) -> None:
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
@@ -158,6 +170,12 @@ class CommandBar(QWidget):
         The input is disabled so Enter cannot be swallowed by the line edit,
         and focus moves to the widget itself so its keyPressEvent sees the
         answer.
+
+        _activate() is not optional here: after a plan ran focus_window, the
+        OS foreground is the target app, and without a real focus grab the
+        user's Enter would land *in that app* while the question times out
+        unanswered. The pipeline restores the previous foreground window once
+        the question is resolved.
         """
         self._pending_confirm = True
         if not self.isVisible():
@@ -165,8 +183,8 @@ class CommandBar(QWidget):
         self.input.setEnabled(False)
         self.input.setText("")
         self.status.setText(f"{question}?   [Enter] proceed   [Esc] cancel")
+        self._activate()
         self.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.raise_()
 
     def cancel_confirm(self) -> None:
         """Leave the confirm state without emitting an answer (e.g. on timeout)."""
