@@ -7,6 +7,7 @@ whitelist, so the fast path cannot drift from the slow path or skip a guard.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
@@ -101,6 +102,17 @@ def _app_paths_lookup(exe: str) -> str | None:
     return None
 
 
+def _start_menu_shortcuts() -> dict[str, str]:
+    """Lowercased shortcut stem -> shortcut path, across both Start Menus."""
+    found: dict[str, str] = {}
+    for root in _START_MENU_DIRS:
+        if not root.is_dir():
+            continue
+        for lnk in root.rglob("*.lnk"):
+            found.setdefault(lnk.stem.lower(), str(lnk))
+    return found
+
+
 def _start_menu_lookup(name: str) -> str | None:
     """Find a Start Menu shortcut whose name matches.
 
@@ -111,18 +123,35 @@ def _start_menu_lookup(name: str) -> str | None:
     needle = name.strip().lower()
     if not needle:
         return None
+    shortcuts = _start_menu_shortcuts()
+    if needle in shortcuts:
+        return shortcuts[needle]
     best: tuple[int, str] | None = None
-    for root in _START_MENU_DIRS:
-        if not root.is_dir():
+    for stem, path in shortcuts.items():
+        if stem.startswith(needle) or needle in stem:
+            score = len(stem)
+            if best is None or score < best[0]:
+                best = (score, path)
+    return best[1] if best else None
+
+
+def _fuzzy_app_correction(name: str) -> str | None:
+    """Closest known application name for a near-miss, or None.
+
+    Deterministic typo repair ("sptofiy" -> "spotify") with no model in the
+    loop, matched only against names that are actually launchable here: the
+    alias table plus the Start Menu. The worst case is therefore launching a
+    real installed app and saying so, never conjuring an arbitrary target.
+    Matching rules (ratio + transposition) live in windows.is_near_name.
+    """
+    candidates = sorted(set(_APP_ALIASES) | set(_start_menu_shortcuts()))
+    best: tuple[float, str] | None = None
+    for candidate in candidates:
+        if not win.is_near_name(name, candidate):
             continue
-        for lnk in root.rglob("*.lnk"):
-            stem = lnk.stem.lower()
-            if stem == needle:
-                return str(lnk)
-            if stem.startswith(needle) or needle in stem:
-                score = len(stem)
-                if best is None or score < best[0]:
-                    best = (score, str(lnk))
+        score = difflib.SequenceMatcher(None, name, candidate).ratio()
+        if best is None or score > best[0]:
+            best = (score, candidate)
     return best[1] if best else None
 
 
@@ -189,7 +218,11 @@ class Executor:
         if ":" in target or "\\" in target or "/" in target:
             return True
         exe = name if name.endswith(".exe") else f"{name}.exe"
-        return not (shutil.which(exe) or _app_paths_lookup(exe) or _start_menu_lookup(name))
+        if shutil.which(exe) or _app_paths_lookup(exe) or _start_menu_lookup(name):
+            return False
+        # A repairable near-miss of a known app is recognised: prompting
+        # "Launch sptofiy?" would just parrot the typo at the user.
+        return _fuzzy_app_correction(name) is None
 
     def run(
         self,
@@ -282,6 +315,28 @@ class Executor:
         if not _SAFE_TARGET.match(target):
             raise ExecutionError(f"unsafe application name: {target!r}")
 
+        launched = self._try_launch(target)
+        if launched is not None:
+            return launched
+
+        # Near-miss repair. The planner normalises most typos itself (it
+        # writes the target string), but when one slips through verbatim the
+        # lookup should not dead-end on it. The correction is reported in the
+        # result rather than applied silently.
+        corrected = _fuzzy_app_correction(target.lower())
+        if corrected is not None:
+            launched = self._try_launch(corrected)
+            if launched is not None:
+                detail, data = launched
+                return (
+                    f"{detail} (read {target!r} as {corrected!r})",
+                    {**data, "corrected_from": target},
+                )
+
+        raise ExecutionError(f"could not find an application called {target!r}")
+
+    def _try_launch(self, target: str) -> tuple[str, dict] | None:
+        """One pass through the resolution chain, or None if nothing matched."""
         resolved = _APP_ALIASES.get(target.lower(), target)
 
         # A URI scheme (ms-settings:, http:) goes to the shell handler.
@@ -301,7 +356,7 @@ class Executor:
             proc = subprocess.Popen(["cmd", "/c", "start", "", shortcut], shell=False)
             return f"launched {Path(shortcut).stem}", {"pid": proc.pid, "shortcut": shortcut}
 
-        raise ExecutionError(f"could not find an application called {target!r}")
+        return None
 
     def _focus_window(self, action: Action) -> tuple[str, dict]:
         match = win.find_window(action.target)

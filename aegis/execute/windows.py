@@ -14,11 +14,35 @@ focus over deliberately - the same mechanism the command bar already uses.
 from __future__ import annotations
 
 import ctypes
+import difflib
 import logging
 from ctypes import wintypes
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
+
+
+def is_near_name(query: str, candidate: str, cutoff: float = 0.75) -> bool:
+    """Whether ``query`` is a plausible typo of ``candidate``.
+
+    The first letter must match outright: real typos essentially never fumble
+    it, and distinct real words collide without that gate - "teams" vs
+    "steam" scores a ratio of 0.80, which would otherwise launch Steam for
+    someone asking for Teams. The cost is missing a mangled first letter
+    ("potify"), which fails honestly instead of guessing.
+
+    Past that gate, two rules, because difflib under-scores transpositions:
+
+    * difflib ratio >= ``cutoff`` catches dropped, doubled and substituted
+      letters ("notepda", "crome", "firefx").
+    * same length + same character multiset catches pure transpositions
+      ("sptofiy" -> "spotify", which difflib scores only 0.71).
+    """
+    if query[:1] != candidate[:1]:
+        return False
+    if difflib.SequenceMatcher(None, query, candidate).ratio() >= cutoff:
+        return True
+    return len(query) == len(candidate) and sorted(query) == sorted(candidate)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -75,8 +99,9 @@ def find_window(target: str) -> Window | None:
     """Best window match for a user's phrasing, or None.
 
     Ranked: exact title, then prefix, then substring, then all query words
-    present. Ties break toward the shorter title, which is almost always the
-    main window rather than a document-specific one.
+    present, then a per-word near-miss ("discrod" still finds Discord). Ties
+    break toward the shorter title, which is almost always the main window
+    rather than a document-specific one.
     """
     needle = target.strip().lower()
     if not needle:
@@ -93,6 +118,13 @@ def find_window(target: str) -> Window | None:
             return (2, len(title))
         if all(word in title for word in needle.split()):
             return (3, len(title))
+        # Last tier: a single-word query that is a near-miss of one of the
+        # title's words. Length-gated because short words collide too easily
+        # ("mail" scores 0.75 against "main"); any real match on the tiers
+        # above outranks this one anyway.
+        if " " not in needle and len(needle) >= 5:
+            if any(is_near_name(needle, word) for word in title.replace("-", " ").split()):
+                return (4, len(title))
         return None
 
     scored = [(rank(w), w) for w in windows]

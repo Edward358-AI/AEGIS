@@ -1,15 +1,15 @@
 """M1 acceptance harness.
 
-The headline tests are the live ones. Section 6 interrupts a *real* synthetic
+The headline tests are the live ones. Section 7 interrupts a *real* synthetic
 typing burst with the kill switch - until M1 no production verb drove
 SendInput, so the switch had only ever been proven against the harness.
-Section 7 drives the *real* confirmation UI and proves it wins keyboard focus
+Section 8 drives the *real* confirmation UI and proves it wins keyboard focus
 from the target app and hands it back afterwards - the gap that let a
 confirmed alt+f4 close the bar itself instead of the window the plan aimed at.
 
 Usage:  .venv\\Scripts\\python.exe scripts\\m1_check.py [--headless]
 
---headless skips the live sections (6 and 7), so the rest can run on a busy
+--headless skips the live sections (7 and 8), so the rest can run on a busy
 machine without stealing focus.
 """
 
@@ -158,7 +158,41 @@ def main() -> int:
     spy_exec.run(Plan(speech="", actions=[Action(verb="task_add", target="harness probe task")]))
     check("Known-safe verb does not prompt", not asked)
 
-    section("5. Outcome speech is honest")
+    section("5. Near-miss app and window names")
+    from aegis.execute.registry import _fuzzy_app_correction  # noqa: PLC0415
+
+    for typo, expected in [
+        ("sptofiy", "spotify"),   # transposition - difflib alone scores 0.71
+        ("notepda", "notepad"),
+        ("discrod", "discord"),
+        ("crome", "chrome"),
+    ]:
+        check(
+            f"correction {typo!r} -> {expected!r}",
+            _fuzzy_app_correction(typo) == expected,
+            f"got {_fuzzy_app_correction(typo)!r}",
+        )
+    check(
+        "'teams' is not anagram-corrected to 'steam'",
+        _fuzzy_app_correction("teams") != "steam",
+        f"got {_fuzzy_app_correction('teams')!r}",
+    )
+    check("Gibberish stays uncorrected", _fuzzy_app_correction("qzxvbn") is None)
+    check(
+        "Near-miss of a known app skips the unknown-app prompt",
+        not Executor._is_unrecognised_app("sptofiy"),
+    )
+    check("Genuinely unknown app still prompts", Executor._is_unrecognised_app("qzxvbn"))
+    check(
+        "Window word near-match accepts a transposition",
+        win.is_near_name("discrod", "discord"),
+    )
+    check(
+        "Window word near-match rejects a different app",
+        not win.is_near_name("slack", "steam"),
+    )
+
+    section("6. Outcome speech is honest")
     plan = Plan(speech="Notepad is closed, sir.", actions=[Action(verb="press_keys", target="alt+f4")])
     ok_r = ExecutionResult("press_keys", True, "pressed alt+f4")
     fail_r = ExecutionResult("press_keys", False, "Windows refused")
@@ -191,19 +225,19 @@ def main() -> int:
         speech_for_outcome(qplan, [ans_r]).speech == summary,
     )
 
-    section("6. Kill switch against a LIVE input burst")
+    section("7. Kill switch against a LIVE input burst")
     if headless:
         print(f"{INFO} skipped (--headless)")
     else:
         run_live_burst()
 
-    section("7. Confirmation focus round-trip (live)")
+    section("8. Confirmation focus round-trip (live)")
     if headless:
         print(f"{INFO} skipped (--headless)")
     else:
         run_confirm_focus_test()
 
-    section("8. Task store")
+    section("9. Task store")
     before = len(db.open_tasks(limit=100))
     task = db.add_task("harness smoke task", due="tomorrow")
     check("Task added with parsed due date", task.due is not None, f"due={task.due}")
@@ -214,7 +248,7 @@ def main() -> int:
     # Clean up the probe task from section 4 too.
     db.complete_task("harness probe task")
 
-    section("9. Intent routing for the new verbs")
+    section("10. Intent routing for the new verbs")
     classifier = IntentClassifier()
     for request, expected in [
         ("open discord", Intent.ACT),
@@ -333,6 +367,13 @@ def run_confirm_focus_test() -> None:
         if target is None or not win.focus_window(target.hwnd):
             check("Focused Notepad for the confirmation focus test", False)
             return
+
+        near = win.find_window("notepda")
+        check(
+            "find_window('notepda') fuzzy-matches the live Notepad window",
+            near is not None and near.hwnd == target.hwnd,
+            near.title if near else "no match",
+        )
 
         bar_hwnd = int(assistant.bar.winId())
         outcome: dict[str, bool] = {}
