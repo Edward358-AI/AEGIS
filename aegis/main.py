@@ -239,8 +239,8 @@ class Aegis:
         # What gets SAID is decided from the results, not from the plan:
         # plan.speech was written before anything ran, and a failed or
         # declined plan must not get its success line read aloud. Query
-        # answers come out of execution too, so this is also where "what do I
-        # still have to do" gains an actual spoken answer.
+        # answers come out of execution too - from M2, "what's on my screen"
+        # is answered by what perception actually produced.
         outcome = speech_for_outcome(plan, results)
         if outcome.status is not None:
             self.bridge.status.emit(outcome.status)

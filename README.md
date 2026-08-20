@@ -1,13 +1,21 @@
 # Aegis
 
-A local, low-latency AI desktop agent for Windows — a JARVIS-style assistant that
-takes natural-language commands and drives the OS. Everything runs on-device.
+A local, low-latency computer-control agent for Windows — a JARVIS-styled voice
+that takes natural-language commands and drives the OS. Everything runs
+on-device.
 
-**Status: M1 complete.** Global hotkey → command bar → local LLM planner
-(constrained JSON) → gated executor → speech. Aegis can launch and focus apps,
-type text, press key chords, and track tasks in SQLite. Safety primitives (kill
-switch, verb whitelist, action ceiling, rate cap, taint gate, inline
-confirmation) are in place and tested against live synthetic input.
+Aegis is deliberately **not** a personal assistant. It doesn't track your
+tasks, remind you of things, or manage your life — general-purpose assistants
+already do that better. Its one job is operating the machine: launching,
+focusing, typing, pressing, and (from M2) seeing and clicking. Memory returns
+at M5 as *agent* memory — what it has seen and done — not as a to-do list.
+
+**Status: M1 complete, re-scoped to pure computer control.** Global hotkey →
+command bar → local LLM planner (constrained JSON) → gated executor → speech.
+Aegis can launch and focus apps (typo-tolerant), type text, and press key
+chords. Safety primitives (kill switch, verb whitelist, action ceiling, rate
+cap, taint gate, inline confirmation) are in place and tested against live
+synthetic input.
 
 ## Requirements
 
@@ -40,8 +48,9 @@ lms server start && lms load llama-3.2-3b-instruct -c 4096 --parallel 1 --ttl 36
 - **`Esc`** — dismiss the bar
 - **`Enter` / `Esc`** — approve / cancel when a confirmation is pending
 
-Try: *"open notepad"*, *"switch to firefox"*, *"type hello world"*,
-*"log that I finished the history essay"*, *"what do I still have to do"*.
+Try: *"open notepad"*, *"switch to firefox"*, *"open notepad and type hello
+world"*, *"press ctrl+s"* — and *"open sptofiy"*, which launches Spotify
+anyway (deterministic near-miss repair, no model involved).
 
 Risky actions (closing chords like `alt+f4`, unrecognised applications, and any
 plan built from untrusted screen content) pause for an inline `Enter`/`Esc`
@@ -109,7 +118,6 @@ aegis/
   schema/          pydantic actions -> JSON Schema for constrained decoding
   brain/           persona prompt, untrusted-content fence, LM Studio planner
   execute/         SendInput primitives, window focus, the single gated executor
-  memory/          SQLite task store
   ui/              command bar (doubles as the confirmation prompt)
   voice/           TTS with pre-rendered acknowledgement cache
 ```

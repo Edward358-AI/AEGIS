@@ -22,7 +22,6 @@ from aegis.core.integrity import can_send_input_to_foreground
 from aegis.core.timing import Trace
 from aegis.execute import windows as win
 from aegis.execute.sendinput import InputSender
-from aegis.memory import db
 from aegis.safety.guard import (
     AbortedError,
     InputGuard,
@@ -187,9 +186,6 @@ class Executor:
             "focus_window": self._focus_window,
             "type_text": self._type_text,
             "press_keys": self._press_keys,
-            "task_add": self._task_add,
-            "task_complete": self._task_complete,
-            "query_tasks": self._query_tasks,
             "answer": self._answer_user,
             "ask_user": self._ask_user,
         }
@@ -304,8 +300,6 @@ class Executor:
             "focus_window": f"Switch to {target}",
             "type_text": f"Type {target!r} into the focused window",
             "press_keys": f"Press {normalise_chord(target)}",
-            "task_add": f"Add task {target!r}",
-            "task_complete": f"Mark {target!r} complete",
         }
         return phrasing.get(action.verb, f"{action.verb}: {target}")
 
@@ -385,22 +379,6 @@ class Executor:
         chord = normalise_chord(action.target)
         self.sender.press_keys(action.target)
         return f"pressed {chord}", {"chord": chord}
-
-    def _task_add(self, action: Action) -> tuple[str, dict]:
-        task = db.add_task(action.target)
-        return f"logged task: {task.title}", {"id": task.id, "title": task.title}
-
-    def _task_complete(self, action: Action) -> tuple[str, dict]:
-        task = db.complete_task(action.target)
-        if task is None:
-            raise ExecutionError(f"no open task matching {action.target!r}")
-        return f"completed: {task.title}", {"id": task.id, "title": task.title}
-
-    def _query_tasks(self, action: Action) -> tuple[str, dict]:
-        summary = db.summarise_open()
-        if self._answer is not None:
-            self._answer(summary)
-        return summary, {"summary": summary}
 
     def _ask_user(self, action: Action) -> tuple[str, dict]:
         if self._ask is not None:

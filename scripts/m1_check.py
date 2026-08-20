@@ -28,7 +28,6 @@ from aegis.brain.outcome import speech_for_outcome  # noqa: E402
 from aegis.core.integrity import level_name, own_integrity, process_integrity  # noqa: E402
 from aegis.execute import windows as win  # noqa: E402
 from aegis.execute.registry import ExecutionResult, Executor  # noqa: E402
-from aegis.memory import db  # noqa: E402
 from aegis.safety.guard import AbortedError, InputGuard, is_destructive_chord  # noqa: E402
 from aegis.schema.actions import (  # noqa: E402
     CAPABILITY_SETS,
@@ -155,7 +154,7 @@ def main() -> int:
     spy_exec.run(Plan(speech="", actions=[Action(verb="launch_app", target=r"C:\Windows\System32\cmd.exe")]))
     check("Raw executable path prompts for confirmation", len(asked) == 1, f"asked: {asked[:1]}")
     asked.clear()
-    spy_exec.run(Plan(speech="", actions=[Action(verb="task_add", target="harness probe task")]))
+    spy_exec.run(Plan(speech="", actions=[Action(verb="answer", target="harness probe")]))
     check("Known-safe verb does not prompt", not asked)
 
     section("5. Near-miss app and window names")
@@ -217,12 +216,12 @@ def main() -> int:
         "Failure outranks a decline in a mixed plan",
         "Failed" in (speech_for_outcome(plan, [dec_r, fail_r]).status or ""),
     )
-    qplan = Plan(speech="One moment, sir.", actions=[Action(verb="query_tasks", target="")])
-    summary = "2 tasks outstanding: history essay; laundry."
-    ans_r = ExecutionResult("query_tasks", True, summary, {"summary": summary})
+    qplan = Plan(speech="One moment, sir.", actions=[Action(verb="answer", target="")])
+    reply = "The focused window is Notepad, sir."
+    ans_r = ExecutionResult("answer", True, reply, {"answer": reply})
     check(
         "A query speaks the actual answer, not the plan's filler line",
-        speech_for_outcome(qplan, [ans_r]).speech == summary,
+        speech_for_outcome(qplan, [ans_r]).speech == reply,
     )
 
     section("7. Kill switch against a LIVE input burst")
@@ -237,23 +236,12 @@ def main() -> int:
     else:
         run_confirm_focus_test()
 
-    section("9. Task store")
-    before = len(db.open_tasks(limit=100))
-    task = db.add_task("harness smoke task", due="tomorrow")
-    check("Task added with parsed due date", task.due is not None, f"due={task.due}")
-    check("Open task count increased", len(db.open_tasks(limit=100)) == before + 1)
-    done = db.complete_task("harness smoke")
-    check("Task completed by fuzzy match", done is not None, done.title if done else "no match")
-    check("Open task count restored", len(db.open_tasks(limit=100)) == before)
-    # Clean up the probe task from section 4 too.
-    db.complete_task("harness probe task")
-
-    section("10. Intent routing for the new verbs")
+    section("9. Intent routing")
     classifier = IntentClassifier()
     for request, expected in [
         ("open discord", Intent.ACT),
         ("type hello world", Intent.ACT),
-        ("what do i still have to do", Intent.QUERY),
+        ("what's on my screen", Intent.QUERY),
     ]:
         got, how = classifier.classify(request)
         check(f"classify({request!r}) -> {got.value}", got is expected, f"via {how}")

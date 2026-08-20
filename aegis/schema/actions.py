@@ -27,14 +27,16 @@ from aegis.config import settings
 
 # Every verb Aegis implements. The executor enforces this list independently of
 # the model, so an injected instruction cannot name a capability we lack.
+#
+# Aegis is a computer-control agent, not a personal assistant: the M1-era task
+# verbs (task_add / task_complete / query_tasks) were removed with the task
+# store. Memory returns at M5 re-scoped to agent memory - recall of actions
+# and machine state - not to-do tracking.
 Verb = Literal[
     "launch_app",
     "focus_window",
     "type_text",
     "press_keys",
-    "task_add",
-    "task_complete",
-    "query_tasks",
     "answer",
     "ask_user",
 ]
@@ -45,17 +47,13 @@ ALL_VERBS: frozenset[str] = frozenset(
         "focus_window",
         "type_text",
         "press_keys",
-        "task_add",
-        "task_complete",
-        "query_tasks",
         "answer",
         "ask_user",
     }
 )
 
 # Verbs with no effect outside Aegis itself. Everything else is side-effecting.
-# query_tasks only reads our own database, so it is safe on the read path.
-READ_ONLY_VERBS: frozenset[str] = frozenset({"answer", "ask_user", "query_tasks"})
+READ_ONLY_VERBS: frozenset[str] = frozenset({"answer", "ask_user"})
 
 # Verbs whose effects are hard to undo. These always route through the
 # human-in-the-loop confirmation regardless of how confident the model is.
@@ -82,12 +80,12 @@ CAPABILITY_SETS: dict[Intent, frozenset[str]] = {
             "focus_window",
             "type_text",
             "press_keys",
-            "task_add",
-            "task_complete",
             "ask_user",
         }
     ),
-    Intent.QUERY: frozenset({"answer", "query_tasks", "ask_user"}),
+    # The read path today only answers from its own context; from M2 it
+    # answers about the screen (pruned UIA text), which is why it exists.
+    Intent.QUERY: frozenset({"answer", "ask_user"}),
     Intent.UNKNOWN: frozenset({"ask_user"}),
 }
 

@@ -25,7 +25,9 @@ from aegis.schema.actions import Plan
 
 # Verbs whose payload IS the reply. What they produced during execution is the
 # thing worth saying; the plan's pre-written sentence was at best a filler.
-_ANSWER_VERBS = frozenset({"answer", "query_tasks"})
+# (From M2 this matters more: answers about the screen are produced by
+# execution, not predictable at planning time.)
+_ANSWER_VERBS = frozenset({"answer"})
 
 
 @dataclass

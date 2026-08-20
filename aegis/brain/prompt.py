@@ -40,18 +40,6 @@ VERB_DOCS: dict[str, str] = {
         '- press_keys: press a key combination. "target" is the chord, e.g. '
         '"ctrl+s", "alt+tab", "enter".'
     ),
-    "task_add": (
-        '- task_add: record something the user needs to do. "target" is the '
-        'task description, e.g. "finish history essay".'
-    ),
-    "task_complete": (
-        '- task_complete: mark an existing task done. "target" describes which '
-        'one, e.g. "history essay".'
-    ),
-    "query_tasks": (
-        '- query_tasks: report what the user still has outstanding. "target" is '
-        'unused; pass an empty string.'
-    ),
     "answer": (
         '- answer: reply to the user\'s question. "target" is the answer text, '
         "kept to one or two sentences."

@@ -51,14 +51,7 @@ With Notepad focused and some throwaway text in it:
 - [ ] Trip the kill switch while a confirmation question is open → question dies **immediately** as declined (not after the 25s timeout), bar leaves confirm mode
 - [ ] Next command after a kill works normally (guard resets per command)
 
-## 6. Task memory
-
-- [ ] "log that I finished the history essay" → task added, confirmed aloud
-- [ ] "remind me to do laundry tomorrow" → added with a real date on it
-- [ ] "what do I still have to do" → **speaks your actual list**, not a canned line (also shown in the bar)
-- [ ] "log that I finished the laundry" → completes the right task by fuzzy match
-
-## 7. Voice and honesty
+## 6. Voice and honesty
 
 - [ ] Every command: cached ack fires near-instantly, real reply follows; utterances never overlap
 - [ ] It's the JARVIS Piper voice, not SAPI David
@@ -72,3 +65,5 @@ Don't test these; they're designed-out for now: reading the screen or reacting
 to dialogs (M2/M4), clicking anything (M2 wires the mouse verbs to element
 picking), voice input / wake word (M3), research-grade answers (3B model, no
 internet), typing into elevated windows (deliberate OS boundary, stays).
+Task tracking and reminders are gone on purpose — Aegis is a computer-control
+agent; life tracking lives with your general-purpose assistant.
